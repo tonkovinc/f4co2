@@ -21,6 +21,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -51,6 +52,7 @@ static uint8_t GAS_CONCENTRATION_READ[] = {0xff, 0x01, 0x86, 0x00, 0x00, 0x00, 0
 uint8_t CO2_RESPONSE[9];
 uint16_t ppm = 0;
 char trans_str[64] = {0,};
+volatile uint8_t count_overflow = 0;
 
 uint8_t buf[64]; //???? ???????? ???????? ???????
 uint8_t pos = 0; //??????? ???????? ????????
@@ -135,6 +137,42 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 
 
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+        if(htim->Instance == TIM1)
+        {
+                count_overflow++;
+        }
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) // ?????? ?? ???????
+{
+        if(htim->Instance == TIM1)
+        {
+                if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) // RISING ? LOW ?? HIGH
+                {
+                        __HAL_TIM_SET_COUNTER(&htim1, 0x0000); // ????????? ????????
+                        count_overflow = 0; // ???????? ??????????
+                }
+
+                else if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) // FALLING ? HIGH ?? LOW
+                {
+                        uint32_t falling = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_2); // ?????? ???????? ? ???????? ???????/?????????
+                        snprintf(trans_str, 63, "Pulse %lu mks\n", falling + (65000 * count_overflow));
+												puts0(trans_str);
+												uint32_t th = falling + (65000 * count_overflow) / 1000;
+												uint32_t tl = 1004 - th;
+												ppm =  2000 * (th-2)/(th+tl-4); 
+												snprintf(trans_str, 63, "ppm 2000==%d\n",ppm );
+												puts0(trans_str);  
+												ppm =  5000 * (th-2)/(th+tl-4); 
+												snprintf(trans_str, 63, "ppm 5000==%d\n",ppm );
+												puts0(trans_str); 		
+									
+                }
+        } 
+
+}
 /* USER CODE END 0 */
 
 /**
@@ -169,14 +207,21 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_ADC1_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+	//HAL_TIM_Base_Start_IT(&htim1);
+  //HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1);
+  //HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_2);
+	
+	HAL_ADCEx_Calibration_Start(&hadc1);
+	
 	NVIC_EnableIRQ (USART2_IRQn); 
 	__enable_irq ();
 
 	HAL_UART_Receive_IT(&huart2, (uint8_t *)fakebuf,1);
 	puts0("Program started\n");
-	uint8_t ABClogic[9] = {0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6};
-	uint8_t ABClogic_responce[9];
+	//uint8_t ABClogic[9] = {0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6};
+	//uint8_t ABClogic_responce[9];
 	//HAL_UART_Transmit(&huart1, ABClogic, 9, 0xFFFF);
 	/*HAL_UART_Receive(&huart1, ABClogic_responce,9, 0x0FFF);
   uint8_t ABC_i;
@@ -190,6 +235,24 @@ int main(void)
 		puts0("ABC error\n");  
   } 
 	else puts0("ABC OK!\n"); */ 
+	
+	
+	uint8_t setrangeA_cmd[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x13, 0x88, 0xCB}; // ?????? ???????? 0 - 5000ppm
+	uint8_t setrangeA_response[9];
+	HAL_UART_Transmit(&huart1, setrangeA_cmd, 9, 0xFFFF);
+	HAL_UART_Receive(&huart1, setrangeA_response,9, 0x0FFF);
+  uint8_t setrangeA_i;
+  uint8_t setrangeA_crc = 0;
+  for (setrangeA_i = 1; setrangeA_i < 8; setrangeA_i++) {
+			setrangeA_crc+=setrangeA_response[setrangeA_i];
+	}
+  setrangeA_crc = 0xFF - setrangeA_crc;
+  setrangeA_crc += 1;
+  if ( !((setrangeA_response[0] == 0xFF) && (setrangeA_response[1] == 0x99) && (setrangeA_response[8] == setrangeA_crc)) ) {
+		puts0("CRC error\n");  
+  } 
+	else puts0("CRC OK!\n");
+	
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -208,13 +271,28 @@ int main(void)
 				puts0("Checksum error\n");
 			}
 			else puts0("Checksum OK\n");
-			//ppm = (((uint16_t)CO2_RESPONSE[2]) << 8) + CO2_RESPONSE[3];
-			uint32_t responseHigh = (unsigned int) CO2_RESPONSE[2];
-			uint32_t responseLow = (unsigned int) CO2_RESPONSE[3];
-			uint32_t ppm = (256*responseHigh) + responseLow;
+			ppm = (((uint16_t)CO2_RESPONSE[2]) << 8) + CO2_RESPONSE[3];
+			//uint32_t responseHigh = CO2_RESPONSE[2];
+			//uint32_t responseLow = CO2_RESPONSE[3];
+			//uint32_t ppm = (256*responseHigh) + responseLow;
 			snprintf(trans_str, 63, "ppm==%d\n",ppm );
 			//intToAscii(ppm);
 			puts0(trans_str);
+			ppm = ppm * 2/5;
+			snprintf(trans_str, 63, "ppm 2/5==%d\n",ppm );
+			puts0(trans_str);   
+			
+			
+			uint16_t adc = 0;
+			HAL_ADC_Start(&hadc1); 
+      HAL_ADC_PollForConversion(&hadc1, 100); 
+      adc = HAL_ADC_GetValue(&hadc1); 
+      HAL_ADC_Stop(&hadc1); 
+      snprintf(trans_str, 63, "ADC %d\n", adc);
+      puts0(trans_str);	
+
+
+			
 			if (ppm > 800) HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 			else HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
  			HAL_Delay(10000);   
